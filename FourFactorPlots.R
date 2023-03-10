@@ -1,6 +1,6 @@
 ########################
 ## A R program to plot two differential condition volcano plots in four quadrants. 
-## Usage. Rscript FourFactorPlots.R input1.xlsx input2.xlsx 
+## Usage. Rscript FourFactorPlots.R input1.xlsx input2.xlsx condition_1 condition_2
 #########################
 library(tidyverse)
 library(dplyr)
