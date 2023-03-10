@@ -1,3 +1,7 @@
+########################
+## A R program to plot two differential condition volcano plots in four quadrants. 
+## Usage. Rscript FourFactorPlots.R input1.xlsx input2.xlsx 
+#########################
 library(tidyverse)
 library(dplyr)
 library(ggplot2)
@@ -12,13 +16,12 @@ args = commandArgs(trailingOnly=TRUE)
 
 # Setting work directory
 getwd()
-setwd("/home/gpphpz-admin/MUdata/CMC_data/project02/mRNAseq/")
+setwd(getwd())
 
 # Loading matrix of highconfidence genes
-#file1= args[1] #"resN2_F180del_Input_results.csv"
-#file2= args[2] #"resN2_F180del_IP_results.csv"
-file1 = "Gene_expressionfor24samplesv3.xlsx"
-file2 = "Gene_expressionfor24samplesv3.xlsx"
+file1= args[1] # for ex. resN2_F180del_Input_results.csv
+file2= args[2] # for ex. resN2_F180del_IP_results.csv
+
 
 difcondf = read.xlsx(file1, sheet = as.numeric(args[1])) #read.table(file1, header = 1, sep = "\t") #args[1]
 difconds = read.xlsx(file2, sheet = as.numeric(args[2])) #read.table(file2, header = 1, sep = "\t") #args[2]
