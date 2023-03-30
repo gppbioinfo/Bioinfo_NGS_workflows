@@ -1,0 +1,267 @@
+---
+title: "HL_Plants_DE"
+author: "GP"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+Load all required libraries here for Differential expression analysis on transcriptomic data of multiple altitude plants population
+
+```{r warning=F}
+library(edgeR)
+library(dplyr)
+library(ggplot2)
+library(PCAtools)
+library(tidyverse)
+library(openxlsx)
+library(foreach)
+library(doParallel)
+```
+
+## Including Plots
+
+Load input read count data files from the transcriptome in samples as columns and transcripts as rows
+
+```{r echo=FALSE}
+#set working directory
+getwd()
+#setwd("C:/Users/gppbi/Download/NRDT_DE/OneDrive_1_3-27-2023")
+setwd(getwd())
+
+#POP32
+POP32 <- read.table("edgeR-POP32/POP-32.matrix.POP32_vs_POP32_control.edgeR.count_matrix", sep="\t", stringsAsFactors = ) %>% rownames_to_column("Transcript_id.32")
+
+head(POP32)
+
+
+#POP54
+POP54 <- read.table("edgeR-POP54/POP-54.matrix.POP54_vs_POP54_control.edgeR.count_matrix", sep="\t", stringsAsFactors = ) %>% rownames_to_column("Transcript_id.54")
+
+head(POP54)
+
+#POP91
+POP91 <- read.table("edgeR-POP91/POP-91.matrix.POP91_vs_POP91_control.edgeR.count_matrix", sep="\t", stringsAsFactors = ) %>% rownames_to_column("Transcript_id.91")
+
+head(POP91)
+
+#POP96
+POP96 <- read.table("edgeR-POP96/POP-96.matrix.POP96_vs_POP96_control.edgeR.count_matrix", sep="\t", stringsAsFactors = ) %>% rownames_to_column("Transcript_id.96")
+
+head(POP96)
+
+dim(POP32)
+dim(POP54)
+dim(POP91)
+dim(POP96)
+
+
+```
+
+**Populations**:
+
+32: Lowland = with warm conditions\
+54: Highland = with cold conditions 91: Lowland = with warm conditions 96: Highland = with cold conditions e.g. 32-2-5-a 32-2-5-b
+
+So, 32 is population (lowland), 2 is mother plant (can range from 1 to 5), 5 is seed number and a/b are technical duplicates.
+
+When k is written somewhere, it indicates control samples for that particular population. So, there will be some control samples and some treatment samples for each population.
+
+```{r}
+# Now perform join operation to merge dataframes from all population
+
+POP_meta <- POP32 %>% full_join(POP54, by=c("Transcript_id.32"="Transcript_id.54")) %>% full_join(POP91, by=c("Transcript_id.32"="Transcript_id.91")) %>%
+ full_join(POP96, by=c("Transcript_id.32"="Transcript_id.96")) %>% 
+  replace(is.na(.),0.1)
+
+head(POP_meta)
+
+```
+Now create a metadata information from the columns of meta population matrix as per the description
+
+```{r}
+Metadata <- data.frame(Sample_name=colnames(POP_meta)[2:49]) %>% separate(Sample_name, c("Population", "Mother_plant","Seed_type","Duplicates"), remove = T, extra = "merge") %>%
+  mutate(Group=fct(case_match(Population,
+                          "POP32" ~ "G32",
+                          "POP54" ~ "G54",
+                          "POP91" ~ "G91",
+                          "POP96" ~ "G96"))) %>% mutate(Group=ifelse(str_detect(Duplicates, "k") == TRUE, paste0(Group, "_Control"), as.character(Group))) %>% mutate(Group=fct(Group))
+dim(Metadata)
+
+
+rownames(Metadata) <- colnames(POP_meta)[2:49]
+
+Metadata
+
+```
+Convert read count matrix as edger DGEList for differential expression and also apply some filtering cutoff to remove low counts and perform PCA over normalized count by applying log2
+
+
+```{r echo=TRUE, warning=FALSE}
+dim(POP_meta)
+
+readMat <- DGEList(counts = as.matrix(POP_meta[,2:49]), group = rownames(Metadata), genes = POP_meta$Transcript_id.32)
+
+summary(readMat)
+head(readMat$counts)
+
+#filtered out low expressed transcripts
+keep <- rowSums(cpm(readMat) >= 1) >= 5
+readMat_fl <- readMat[keep,]
+
+#Apply normalized counts here
+
+readMat_fl_norm <- calcNormFactors(readMat_fl)
+
+# apply log2 scale for pca computation
+readMat_fl_norm_logcpm <- cpm(readMat_fl_norm, log=TRUE)
+#head(readMat_fl_norm_logcpm)
+
+#Run pca analysis
+pca_mat <- pca(readMat_fl_norm_logcpm, metadata=Metadata, removeVar=0.1)
+
+# Population
+biplot(pca_mat, colby = "Population", encircle = T, legendPosition = "right") + theme(text = element_text(face="bold", size=12))
+
+#Mother plant
+biplot(pca_mat, colby = "Mother_plant", encircle = T, legendPosition = "right") + theme(text = element_text(face="bold", size=12))
+
+#Seed_type
+biplot(pca_mat, colby = "Seed_type", encircle = T, legendPosition = "right") + theme(text = element_text(face="bold", size=12))
+
+#Group of plant with control
+biplot(pca_mat, colby = "Group", encircle = T, legendPosition = "right") + theme(text = element_text(face="bold", size=12))
+
+```
+
+Based on the PCA clustering, we have population based separation into sample clusters. We can perform differential expression between cross population regardless of their samples control and treatment information.
+
+```{r}
+# Create the design matrix
+Popl <- factor(Metadata$Population)
+design <- model.matrix(~0+Popl)
+colnames(design) <- levels(Popl)
+design
+
+# Estimate the dispersion parameter
+y <- estimateDisp(readMat_fl_norm, design)
+
+# Perform the differential expression analysis
+
+library(data.table)
+#paste0(data.frame(CJ(Popl, Popl, unique = T)) %>% filter(Popl != Popl.1) %>% mutate(comb = paste0(Popl,"vs",Popl.1, "=", Popl, " - ", Popl.1)) %>% select(3), collapse=",") %>% unlist()
+
+contrast_pl <- makeContrasts(
+POP32vsPOP54=POP32 - POP54, POP32vsPOP91=POP32 - POP91, POP32vsPOP96=POP32 - POP96, POP54vsPOP91=POP54 - POP91, POP54vsPOP96=POP54 - POP96, POP91vsPOP96=POP91 - POP96, levels = design)
+contrast_pl
+
+fit <- glmQLFit(y, design)
+qlf <- glmQLFTest(fit, contrast = contrast_pl[, "POP32vsPOP54"])
+dewb <- createWorkbook()
+
+for (con in colnames(contrast_pl)) {
+  #print(con)
+  qlf <- glmQLFTest(fit, contrast = contrast_pl[, con]) #coef = 1:4)
+  addWorksheet(dewb, sheetName = con)
+  # Extract the differentially expressed genes
+  de_genes <- topTags(qlf, n = nrow(qlf$table))$table
+  writeData(dewb, sheet = con, de_genes)
+  
+  
+  #volcano plots
+  
+  de_genes_vl <- de_genes %>% select(1,2,6) %>% 
+    mutate(Diff=case_when(logFC > 1 & FDR < 0.05 ~ "Up",
+                          logFC < -1 & FDR < 0.05 ~ "Down",
+                          TRUE ~ "NS")) %>%
+                          mutate(Diff=fct_relevel(Diff, "Up","Down","NS"))
+  # Axis limits
+  #Setting axis ticks values
+mx = max(de_genes_vl$logFC)
+mn = min(de_genes_vl$logFC)
+typeof(mx)
+mlf = floor(max(abs(c(mn,mx))))
+mlf
+labeling::extended(0, 10, m = 3)
+breaks_y = labeling::extended(mn, mx, m = 10)
+breaks_y
+breaks_x = labeling::extended(mn, mx, m = 12)
+breaks_x
+  
+  
+  #plot volcano here
+  ggplot(data = de_genes_vl, aes(
+  y = -log10(FDR),
+  x = logFC,
+  color = Diff
+)) +
+  geom_point(alpha = 0.3, size = 2) +
+  #geom_point( data = padjone, shape = 16, size = 2.5, alpha = 1  ) +
+  scale_color_manual(values = c("red", "blue", "gray")) + geom_hline(yintercept = -log10(0.05),linetype = "dashed",linewidth = .3) +
+  geom_text_repel(
+    data = . %>% mutate(label = gsub("\\_", ".", genes)) %>% filter(Diff %in% c("Up", "Down")),
+    aes(label = label),
+    box.padding = .4,
+    show.legend = FALSE,
+    color = "black",
+    alpha = 0.9,
+    size = 3.5,
+    fontface="bold", max.overlaps = getOption("ggrepel.max.overlaps", default = 20)
+  ) +
+  geom_vline(xintercept = c(-log2(2), log2(2)), linetype = "dashed",linewidth = .2) +
+  theme_linedraw() + theme(text = element_text(face = "bold", size = 14)) +
+  theme(legend.title = element_blank()) + theme(legend.key.size = unit(.10, "line")) + 
+  theme(legend.text = element_text(size = 12, face = "bold")) +
+  theme(
+    legend.position = "right",
+    legend.justification = c(0, 1),
+    legend.box.margin = margin(c(0, 0, 0, 0)),
+    legend.background = element_blank()
+  ) + scale_x_continuous(breaks = c(seq(-(mlf-1), mlf-1)), limits = c(-(mlf-1), mlf-1)) 
+
+#Save volcano plot here
+#pdf(file = paste0("mRNAseqVolcanoplot2_",gsub(" |\\:", "",date()),".pdf"), width=8, height=6, pointsize = 72)
+ggsave(file = paste0(con,"_Volcanoplot2_",gsub(" |\\:", "",date()),".pdf"),  plot = last_plot(),  device = "pdf",  width = 8,  height = 7,  units = "in",  bg = "white",  scale = 1.2,dpi = 600)
+  
+}
+saveWorkbook(dewb, file=paste0("All_DE_results",gsub(" |\\:", "", date()),".xlsx"))
+```
+
+# A parallel version of glmQLFTest
+```{r eval=FALSE, include=FALSE}
+# # Set the number of cores to use
+# cores <- detectCores()-2
+# 
+# # Register the cores to use for parallel processing
+# cl <- makeCluster(cores)
+# 
+# # Register the cluster for parallel processing
+# registerDoParallel(cl)
+# 
+# # Parallelize the loop to fit GLMQLF tests and extract differentially expressed genes
+# colnames(contrast_pl)
+# dewb <- createWorkbook()
+# foreach(con = colnames(contrast_pl), .packages = c("edgeR", "openxlsx")) %dopar% {
+#   print(con)
+#   qlf <- glmQLFTest(fit, contrast = contrast_pl[, con])
+#   de_genes <- topTags(qlf, n=nrow(qlf$table))$table
+#   sheetName <- con
+#   addWorksheet(dewb, sheetName = sheetName)
+#   writeData(dewb, sheet = sheetName, de_genes)
+# }
+# 
+# #Save results
+# saveWorkbook(dewb, file=paste0("All_DE_results",gsub(" |\\:", "", date()),".xlsx"))
+# 
+# # Stop the cluster
+# stopCluster(cl)
+
+```
+
